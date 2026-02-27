@@ -11,7 +11,6 @@ from config import RESULT_DIR
 # Cellpose model — loaded once at startup
 # ---------------------------------------------------------------------------
 MODEL = models.CellposeModel(gpu=True, pretrained_model="cpsam")
-io.logger_setup()
 
 # ---------------------------------------------------------------------------
 # Job state
@@ -35,7 +34,13 @@ def worker():
             job["status"] = "processing"
 
         try:
-            img = io.imread(upload_path)
+            zaxis, caxis = None, None
+            if settings["do_3d"]:
+                img = io.imread_3D(upload_path)
+                zaxis = 0
+                caxis = 3
+            else: 
+                img = io.imread_2D(upload_path)
             masks, _, _ = MODEL.eval(
                 img,
                 diameter=settings["diameter"],
@@ -43,6 +48,10 @@ def worker():
                 flow_threshold=settings["flow_threshold"],
                 cellprob_threshold=settings["cellprob_threshold"],
                 min_size=settings["min_size"],
+                do_3D=settings["do_3d"],
+                anisotropy=settings["anisotropy"],
+                channel_axis=caxis,
+                z_axis=zaxis 
             )
             result_name = f"{stem}_{job_id[:8]}_masks.tif"
             result_path = RESULT_DIR / result_name

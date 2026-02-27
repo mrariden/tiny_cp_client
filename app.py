@@ -8,8 +8,11 @@ from config import UPLOAD_DIR
 from schema import SegmentationSettings
 from worker import jobs, jobs_lock, work_q
 
-app = Flask(__name__)
+from cellpose import io
 
+
+app = Flask(__name__)
+io.logger_setup()
 
 @app.get("/")
 def index():
@@ -40,6 +43,8 @@ def upload():
         "flow_threshold":     s.flow_threshold,
         "cellprob_threshold": s.cellprob_threshold,
         "min_size":           s.min_size,
+        "do_3d":              s.do_3d,
+        "anisotropy":         s.anisotropy,
     }
 
     with jobs_lock:
