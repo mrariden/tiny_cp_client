@@ -89,4 +89,11 @@ def download(job_id):
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--expose", action="store_true",
+                        help="Bind to 0.0.0.0 to allow network access (default: localhost only)")
+    parser.add_argument("--port", type=int, default=5000)
+    args = parser.parse_args()
+    host = "0.0.0.0" if args.expose else "127.0.0.1"
+    app.run(host=host, port=args.port, debug=False)
