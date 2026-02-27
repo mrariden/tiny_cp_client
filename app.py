@@ -55,6 +55,7 @@ def upload():
             "status": "queued",
             "result": None,
             "error": None,
+            "log": None,
             "settings": settings,
         }
     work_q.put(job_id)

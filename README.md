@@ -25,10 +25,6 @@ python app.py
 
 Open `http://<host>:5000` in your browser.
 
-## GPU
-
-Change `gpu=False` → `gpu=True` in `app.py` line ~20 on a CUDA-enabled server.
-
 ## Output
 
 Results are saved to `results/<stem>_<id8>_masks.tif` as uint32 labeled arrays (0 = background, 1..N = cells). Compatible with Fiji/ImageJ.

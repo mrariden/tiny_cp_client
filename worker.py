@@ -1,3 +1,4 @@
+import logging
 import queue
 import threading
 from pathlib import Path
@@ -6,6 +7,20 @@ import tifffile
 from cellpose import models, io
 
 from config import RESULT_DIR
+
+
+class _JobLogHandler(logging.Handler):
+    """Forwards cellpose log records into the live job dict."""
+
+    def __init__(self, job_id: str):
+        super().__init__()
+        self._job_id = job_id
+        self.setFormatter(logging.Formatter("%(message)s"))
+
+    def emit(self, record: logging.LogRecord) -> None:
+        with jobs_lock:
+            if self._job_id in jobs:
+                jobs[self._job_id]["log"] = self.format(record)
 
 # ---------------------------------------------------------------------------
 # Cellpose model — loaded once at startup
@@ -33,6 +48,8 @@ def worker():
             settings = job["settings"]
             job["status"] = "processing"
 
+        handler = _JobLogHandler(job_id)
+        logging.getLogger("cellpose").addHandler(handler)
         try:
             zaxis, caxis = None, None
             if settings["do_3d"]:
@@ -65,6 +82,7 @@ def worker():
                 jobs[job_id]["status"] = "error"
                 jobs[job_id]["error"] = str(exc)
         finally:
+            logging.getLogger("cellpose").removeHandler(handler)
             work_q.task_done()
 
 
