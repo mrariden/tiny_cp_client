@@ -1,4 +1,3 @@
-import os
 import queue
 import threading
 import uuid
@@ -7,6 +6,7 @@ from pathlib import Path
 import tifffile
 from cellpose import models, io
 from flask import Flask, jsonify, request, send_file
+from pydantic import BaseModel, ValidationError, field_validator
 
 # ---------------------------------------------------------------------------
 # Directories
@@ -20,6 +20,9 @@ RESULT_DIR.mkdir(exist_ok=True)
 # Cellpose model — loaded once at startup
 # ---------------------------------------------------------------------------
 MODEL = models.CellposeModel(gpu=True, pretrained_model="cpsam")
+
+# Get cellpose logger 
+io.logger_setup()
 
 # ---------------------------------------------------------------------------
 # Job state
@@ -69,6 +72,27 @@ def worker():
 
 _worker_thread = threading.Thread(target=worker, daemon=True)
 _worker_thread.start()
+
+# ---------------------------------------------------------------------------
+# Settings model
+# ---------------------------------------------------------------------------
+
+class SegmentationSettings(BaseModel):
+    diameter: float | None = None
+    channel_cyto: int = 0
+    channel_nuc: int = 0
+    flow_threshold: float = 0.4
+    cellprob_threshold: float = 0.0
+    min_size: int = 15
+
+    @field_validator("diameter", mode="before")
+    @classmethod
+    def _parse_diameter(cls, v):
+        if v == "" or v is None:
+            return None
+        v = float(v)
+        return v if v > 0 else None
+
 
 # ---------------------------------------------------------------------------
 # Flask app
@@ -262,32 +286,17 @@ def upload():
     upload_path = UPLOAD_DIR / save_name
     f.save(str(upload_path))
 
-    def _float_or(key, default):
-        try:
-            return float(request.form[key])
-        except (KeyError, ValueError):
-            return default
-
-    def _int_or(key, default):
-        try:
-            return int(request.form[key])
-        except (KeyError, ValueError):
-            return default
-
-    diameter = _float_or("diameter", None)
-    if diameter is not None and diameter <= 0:
-        diameter = None
-
-    chan_cyto = _int_or("channel_cyto", 0)
-    chan_nuc  = _int_or("channel_nuc",  0)
-    channels  = [chan_cyto, chan_nuc]
+    try:
+        s = SegmentationSettings.model_validate(request.form.to_dict())
+    except ValidationError as exc:
+        return jsonify({"error": exc.errors(include_url=False)}), 400
 
     settings = {
-        "diameter":          diameter,
-        "channels":          channels,
-        "flow_threshold":    _float_or("flow_threshold",    0.4),
-        "cellprob_threshold":_float_or("cellprob_threshold", 0.0),
-        "min_size":          _int_or("min_size",            15),
+        "diameter":           s.diameter,
+        "channels":           [s.channel_cyto, s.channel_nuc],
+        "flow_threshold":     s.flow_threshold,
+        "cellprob_threshold": s.cellprob_threshold,
+        "min_size":           s.min_size,
     }
 
     with jobs_lock:
