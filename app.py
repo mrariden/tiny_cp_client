@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 
 import tifffile
-from cellpose import models
+from cellpose import models, io
 from flask import Flask, jsonify, request, send_file
 
 # ---------------------------------------------------------------------------
@@ -19,7 +19,7 @@ RESULT_DIR.mkdir(exist_ok=True)
 # ---------------------------------------------------------------------------
 # Cellpose model — loaded once at startup
 # ---------------------------------------------------------------------------
-MODEL = models.CellposeModel(gpu=False, pretrained_model="cpsam")
+MODEL = models.CellposeModel(gpu=True, pretrained_model="cpsam")
 
 # ---------------------------------------------------------------------------
 # Job state
@@ -39,11 +39,19 @@ def worker():
             job = jobs[job_id]
             upload_path = Path(job["upload_path"])
             stem = job["stem"]
+            settings = job["settings"]
             job["status"] = "processing"
 
         try:
-            img = tifffile.imread(upload_path)
-            masks, _, _ = MODEL.eval(img, diameter=None, channels=None)
+            img = io.imread(upload_path)
+            masks, _, _ = MODEL.eval(
+                img,
+                diameter=settings["diameter"],
+                channels=settings["channels"],
+                flow_threshold=settings["flow_threshold"],
+                cellprob_threshold=settings["cellprob_threshold"],
+                min_size=settings["min_size"],
+            )
             result_name = f"{stem}_{job_id[:8]}_masks.tif"
             result_path = RESULT_DIR / result_name
             tifffile.imwrite(str(result_path), masks.astype("uint32"))
@@ -95,6 +103,18 @@ HTML = """<!doctype html>
   a.dl { color: #a78bfa; text-decoration: none; }
   a.dl:hover { text-decoration: underline; }
   #msg { height: 1.2rem; font-size: .85rem; color: #888; margin-bottom: .75rem; }
+  details { margin-bottom: 1.25rem; }
+  summary { cursor: pointer; color: #a78bfa; font-size: .9rem; user-select: none; margin-bottom: .75rem; }
+  summary:hover { color: #c4b5fd; }
+  .settings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .75rem 1.25rem; }
+  .field { display: flex; flex-direction: column; gap: .25rem; }
+  .field label { font-size: .78rem; color: #888; }
+  .field input, .field select {
+    background: #1a1a1f; border: 1px solid #333; border-radius: 6px;
+    color: #e2e2e5; padding: .35rem .6rem; font-size: .88rem; outline: none;
+  }
+  .field input:focus, .field select:focus { border-color: #a78bfa; }
+  .field .hint { font-size: .72rem; color: #555; }
 </style>
 </head>
 <body>
@@ -103,6 +123,49 @@ HTML = """<!doctype html>
   <p>Drag &amp; drop image(s) here, or <span>click to browse</span></p>
   <input type="file" id="fileinput" accept="image/*,.tif,.tiff" multiple>
 </div>
+<details>
+  <summary>&#9881; Segmentation settings</summary>
+  <div class="settings-grid">
+    <div class="field">
+      <label for="s-diameter">Diameter (px)</label>
+      <input id="s-diameter" type="number" min="0" step="1" placeholder="auto">
+      <span class="hint">Leave blank to auto-estimate</span>
+    </div>
+    <div class="field">
+      <label for="s-chan-cyto">Cytoplasm channel</label>
+      <select id="s-chan-cyto">
+        <option value="0" selected>0 — grayscale</option>
+        <option value="1">1 — red</option>
+        <option value="2">2 — green</option>
+        <option value="3">3 — blue</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="s-chan-nuc">Nucleus channel</label>
+      <select id="s-chan-nuc">
+        <option value="0" selected>0 — none</option>
+        <option value="1">1 — red</option>
+        <option value="2">2 — green</option>
+        <option value="3">3 — blue</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="s-flow">Flow threshold</label>
+      <input id="s-flow" type="number" step="0.05" value="0.4" min="-10" max="10">
+      <span class="hint">Higher = more permissive (default 0.4)</span>
+    </div>
+    <div class="field">
+      <label for="s-cellprob">Cell prob. threshold</label>
+      <input id="s-cellprob" type="number" step="0.5" value="0.0" min="-6" max="6">
+      <span class="hint">Lower = more cells detected (default 0.0)</span>
+    </div>
+    <div class="field">
+      <label for="s-minsize">Min cell size (px²)</label>
+      <input id="s-minsize" type="number" step="1" value="15" min="0">
+      <span class="hint">Masks smaller than this are discarded</span>
+    </div>
+  </div>
+</details>
 <div id="msg"></div>
 <table>
   <thead><tr><th>File</th><th>Job ID</th><th>Status</th><th>Action</th></tr></thead>
@@ -119,10 +182,25 @@ drop.addEventListener('dragleave', () => drop.classList.remove('over'));
 drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); uploadFiles(e.dataTransfer.files); });
 fileInput.addEventListener('change', () => uploadFiles(fileInput.files));
 
+function getSettings() {
+  return {
+    diameter:          document.getElementById('s-diameter').value.trim(),
+    channel_cyto:     document.getElementById('s-chan-cyto').value,
+    channel_nuc:      document.getElementById('s-chan-nuc').value,
+    flow_threshold:   document.getElementById('s-flow').value,
+    cellprob_threshold: document.getElementById('s-cellprob').value,
+    min_size:         document.getElementById('s-minsize').value,
+  };
+}
+
 async function uploadFiles(files) {
+  const settings = getSettings();
   for (const file of files) {
     const fd = new FormData();
     fd.append('file', file);
+    for (const [k, v] of Object.entries(settings)) {
+      if (v !== '') fd.append(k, v);
+    }
     try {
       const r = await fetch('/upload', { method: 'POST', body: fd });
       const j = await r.json();
@@ -184,6 +262,34 @@ def upload():
     upload_path = UPLOAD_DIR / save_name
     f.save(str(upload_path))
 
+    def _float_or(key, default):
+        try:
+            return float(request.form[key])
+        except (KeyError, ValueError):
+            return default
+
+    def _int_or(key, default):
+        try:
+            return int(request.form[key])
+        except (KeyError, ValueError):
+            return default
+
+    diameter = _float_or("diameter", None)
+    if diameter is not None and diameter <= 0:
+        diameter = None
+
+    chan_cyto = _int_or("channel_cyto", 0)
+    chan_nuc  = _int_or("channel_nuc",  0)
+    channels  = [chan_cyto, chan_nuc]
+
+    settings = {
+        "diameter":          diameter,
+        "channels":          channels,
+        "flow_threshold":    _float_or("flow_threshold",    0.4),
+        "cellprob_threshold":_float_or("cellprob_threshold", 0.0),
+        "min_size":          _int_or("min_size",            15),
+    }
+
     with jobs_lock:
         jobs[job_id] = {
             "name": f.filename,
@@ -192,6 +298,7 @@ def upload():
             "status": "queued",
             "result": None,
             "error": None,
+            "settings": settings,
         }
     work_q.put(job_id)
     return jsonify({"job_id": job_id})
@@ -204,7 +311,7 @@ def status():
     items.reverse()  # newest first
     # Strip internal fields before sending
     return jsonify([
-        [jid, {k: v for k, v in job.items() if k not in ("upload_path", "stem")}]
+        [jid, {k: v for k, v in job.items() if k not in ("upload_path", "stem", "settings")}]
         for jid, job in items
     ])
 
